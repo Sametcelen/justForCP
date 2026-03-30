@@ -1,0 +1,78 @@
+$tls12Client = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client"
+New-Item $tls12Client -Force | Out-Null
+New-ItemProperty $tls12Client -Name "Enabled"            -Value 1 -PropertyType DWORD -Force | Out-Null
+New-ItemProperty $tls12Client -Name "DisabledByDefault"  -Value 0 -PropertyType DWORD -Force | Out-Null
+
+
+
+$tls12Server = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server"
+New-Item $tls12Server -Force | Out-Null
+New-ItemProperty $tls12Server -Name "Enabled"            -Value 1 -PropertyType DWORD -Force | Out-Null
+New-ItemProperty $tls12Server -Name "DisabledByDefault"  -Value 0 -PropertyType DWORD -Force | Out-Null
+
+
+$dotnet64 = "HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319"
+$dotnet32 = "HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319"
+New-ItemProperty $dotnet64 -Name "SchUseStrongCrypto" -Value 1 -PropertyType DWORD -Force | Out-Null
+New-ItemProperty $dotnet32 -Name "SchUseStrongCrypto" -Value 1 -PropertyType DWORD -Force | Out-Null
+
+Write-Host "TLS 1.2 yapılandırması tamamlandı. Sistem yeniden başlatılmalıdır." -ForegroundColor Green
+
+
+
+
+Restart-Computer -Force
+
+
+
+
+
+
+$cert = Get-ChildItem -Path "Cert:\LocalMachine\Root" |
+        Where-Object { $_.Subject -like "*DigiCert Trusted Root G4*" }
+
+if ($cert) {
+    Write-Host "✅ DigiCert Trusted Root G4 mevcut: $($cert.Thumbprint)" -ForegroundColor Green
+} else {
+    Write-Host "⚠️  Sertifika bulunamadı. Manuel kurulum gerekiyor." -ForegroundColor Yellow
+    Write-Host "İndir: https://cacerts.digicert.com/DigiCertTrustedRootG4.crt" -ForegroundColor Cyan
+}
+
+
+
+
+
+
+
+New-NetFirewallRule `
+    -DisplayName  "FortiSIEM Agent to Supervisor HTTPS" `
+    -Direction    Outbound `
+    -Protocol     TCP `
+    -RemotePort   443 `
+    -RemoteAddress "SUPERVISOR_IP" `
+    -Action       Allow `
+    -Profile      Any
+
+
+New-NetFirewallRule `
+    -DisplayName  "FortiSIEM Agent to Collector HTTPS" `
+    -Direction    Outbound `
+    -Protocol     TCP `
+    -RemotePort   443 `
+    -RemoteAddress "COLLECTOR_IP" `
+    -Action       Allow `
+    -Profile      Any
+
+
+New-NetFirewallRule `
+    -DisplayName  "FortiSIEM JDBC MSSQL Inbound" `
+    -Direction    Inbound `
+    -Protocol     TCP `
+    -LocalPort    1433 `
+    -RemoteAddress "COLLECTOR_IP" `
+    -Action       Allow `
+    -Profile      Any
+
+Write-Host "✅ Firewall kuralları oluşturuldu." -ForegroundColor Green
+
+
