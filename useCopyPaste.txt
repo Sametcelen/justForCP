@@ -1,0 +1,196 @@
+-- 1. Veritabanını oluştur
+IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'PH_Events')
+BEGIN
+    CREATE DATABASE PH_Events;
+END
+GO
+
+USE PH_Events;
+GO
+
+-- 2. LogonEvents tablosu (Login/Logout olayları)
+IF NOT EXISTS (
+    SELECT * FROM sys.objects 
+    WHERE object_id = OBJECT_ID(N'dbo.LogonEvents') AND type = 'U'
+)
+BEGIN
+    CREATE TABLE dbo.LogonEvents (
+        EventTime     DATETIME        NOT NULL DEFAULT GETDATE(),
+        LoginName     NVARCHAR(256)   NOT NULL,
+        ClientHost    NVARCHAR(256),
+        AppName       NVARCHAR(256),
+        EventType     NVARCHAR(50),   -- LOGIN veya LOGOUT
+        Success       NVARCHAR(10),   -- SUCCESS veya FAILURE
+        DBName        NVARCHAR(256),
+        SPID          INT
+    );
+    CREATE INDEX IX_LogonEvents_Time ON dbo.LogonEvents(EventTime DESC);
+END
+GO
+
+-- 3. DDLEvents tablosu (CREATE/ALTER/DROP işlemleri)
+IF NOT EXISTS (
+    SELECT * FROM sys.objects 
+    WHERE object_id = OBJECT_ID(N'dbo.DDLEvents') AND type = 'U'
+)
+BEGIN
+    CREATE TABLE dbo.DDLEvents (
+        EventTime     DATETIME        NOT NULL DEFAULT GETDATE(),
+        EventType     NVARCHAR(100),
+        LoginName     NVARCHAR(256),
+        UserName      NVARCHAR(256),
+        DBName        NVARCHAR(256),
+        SchemaName    NVARCHAR(256),
+        ObjectName    NVARCHAR(256),
+        ObjectType    NVARCHAR(100),
+        CommandText   NVARCHAR(MAX)
+    );
+    CREATE INDEX IX_DDLEvents_Time ON dbo.DDLEvents(EventTime DESC);
+END
+GO
+
+
+
+
+
+
+
+
+
+
+USE master;
+GO
+
+-- Varsa önce düşür
+IF EXISTS (
+    SELECT * FROM sys.server_triggers 
+    WHERE name = 'FSM_Logon_Trigger'
+)
+    DROP TRIGGER FSM_Logon_Trigger ON ALL SERVER;
+GO
+
+CREATE TRIGGER FSM_Logon_Trigger
+ON ALL SERVER
+FOR LOGON
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        INSERT INTO PH_Events.dbo.LogonEvents
+            (EventTime, LoginName, ClientHost, AppName, EventType, Success, DBName, SPID)
+        VALUES (
+            GETDATE(),
+            ORIGINAL_LOGIN(),
+            HOST_NAME(),
+            APP_NAME(),
+            'LOGIN',
+            'SUCCESS',
+            DB_NAME(),
+            @@SPID
+        );
+    END TRY
+    BEGIN CATCH
+        -- Trigger hatası login'i engellemez
+    END CATCH
+END;
+GO
+
+
+
+
+
+
+
+
+
+
+
+
+
+USE master;
+GO
+
+-- Varsa önce düşür
+IF EXISTS (
+    SELECT * FROM sys.server_triggers 
+    WHERE name = 'FSM_DDL_Trigger'
+)
+    DROP TRIGGER FSM_DDL_Trigger ON ALL SERVER;
+GO
+
+CREATE TRIGGER FSM_DDL_Trigger
+ON ALL SERVER
+FOR DDL_DATABASE_LEVEL_EVENTS
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        DECLARE @eventData XML = EVENTDATA();
+        INSERT INTO PH_Events.dbo.DDLEvents
+            (EventTime, EventType, LoginName, UserName, 
+             DBName, SchemaName, ObjectName, ObjectType, CommandText)
+        VALUES (
+            GETDATE(),
+            @eventData.value('(/EVENT_INSTANCE/EventType)[1]',   'NVARCHAR(100)'),
+            @eventData.value('(/EVENT_INSTANCE/LoginName)[1]',   'NVARCHAR(256)'),
+            @eventData.value('(/EVENT_INSTANCE/UserName)[1]',    'NVARCHAR(256)'),
+            @eventData.value('(/EVENT_INSTANCE/DatabaseName)[1]','NVARCHAR(256)'),
+            @eventData.value('(/EVENT_INSTANCE/SchemaName)[1]',  'NVARCHAR(256)'),
+            @eventData.value('(/EVENT_INSTANCE/ObjectName)[1]',  'NVARCHAR(256)'),
+            @eventData.value('(/EVENT_INSTANCE/ObjectType)[1]',  'NVARCHAR(100)'),
+            @eventData.value('(/EVENT_INSTANCE/TSQLCommand)[1]', 'NVARCHAR(MAX)')
+        );
+    END TRY
+    BEGIN CATCH
+        -- Hata sessizce geçilir
+    END CATCH
+END;
+GO
+
+
+
+
+
+
+
+
+
+
+USE PH_Events;
+GO
+
+-- Kullanıcı yoksa oluştur
+IF NOT EXISTS (
+    SELECT 1 FROM sys.database_principals 
+    WHERE name = 'fortisiem_reader'
+)
+BEGIN
+    CREATE USER fortisiem_reader FOR LOGIN fortisiem_reader;
+END
+GO
+
+-- Okuma yetkisi ver
+ALTER ROLE db_datareader ADD MEMBER fortisiem_reader;
+GRANT SELECT ON dbo.LogonEvents TO fortisiem_reader;
+GRANT SELECT ON dbo.DDLEvents   TO fortisiem_reader;
+GO
+
+
+
+
+
+
+
+
+
+
+USE master;
+GO
+
+EXEC sp_configure 'show advanced options', 1;
+RECONFIGURE;
+GO
+
+EXEC sp_configure 'c2 audit mode', 1;
+RECONFIGURE;
+GO
